@@ -271,10 +271,18 @@ if(APPLE)
 endif()
 
 #-------------------------------------------------------------------------------
+# Deployment
+#-------------------------------------------------------------------------------
+
+# Development only: copies the plugin into OBS after each build. The debug
+# build scripts turn it on, release builds and CI leave it off.
+option(BREEZY_DEPLOY "Copy the plugin into OBS after each build" OFF)
+
+#-------------------------------------------------------------------------------
 # Deployment Mac
 #-------------------------------------------------------------------------------
 
-if(APPLE)
+if(APPLE AND BREEZY_DEPLOY)
 
   set(OBS_PLUGINS_DIR "$ENV{HOME}/Library/Application Support/obs-studio/plugins" CACHE PATH "Destination folder for OBS plugins on macOS" )
   set(PLUGIN_BUNDLE "${OBS_PLUGINS_DIR}/${_name}.plugin")
@@ -303,15 +311,17 @@ endif()
 # Deployment Windows
 #-------------------------------------------------------------------------------
 
-if(WIN32)
+if(WIN32 AND BREEZY_DEPLOY)
 
-  set(OBS_PLUGINS_DIR   "$ENV{ProgramFiles}/OBS-Studio/obs-plugins/64bit" CACHE PATH "Destination folder for OBS plugins (64-bit)")
+  set(OBS_PLUGINS_DIR "$ENV{ProgramData}/obs-studio/plugins" CACHE PATH "Destination folder for OBS plugins on Windows")
+  set(PLUGIN_DIR "${OBS_PLUGINS_DIR}/${_name}")
 
-  # Copy the built DLL into the plugins dir, and (optionally) restart OBS
+  # Copy the built DLL and its data into the plugins dir, and (optionally) restart OBS
   add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E echo "Deploying to: ${OBS_PLUGINS_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${OBS_PLUGINS_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${CMAKE_PROJECT_NAME}>" "${OBS_PLUGINS_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E echo "Deploying to: ${PLUGIN_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PLUGIN_DIR}/bin/64bit"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${CMAKE_PROJECT_NAME}>" "${PLUGIN_DIR}/bin/64bit/"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/data" "${PLUGIN_DIR}/data"
 
     # Optional: brutal restart for dev workflow; comment out if you prefer manual
     # COMMAND ${CMAKE_COMMAND} -E echo "Restarting OBS..."

@@ -7,6 +7,7 @@ rm -rf build_macos
 cmake --preset macos \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+  -DBREEZY_DEPLOY=ON \
   --fresh
 
 pipx run --spec pbxproj python scripts/mac-remove-agl.py
