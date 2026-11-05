@@ -50,14 +50,23 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 # QT
 #-------------------------------------------------------------------------------
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Core Network)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Core)
 
 target_link_libraries(
   ${CMAKE_PROJECT_NAME} PRIVATE
   Qt6::Core
   Qt6::Widgets
-  Qt6::Network
 )
+
+#-------------------------------------------------------------------------------
+# CURL
+#-------------------------------------------------------------------------------
+
+# Model downloads use libcurl, OBS doesn't ship the Qt TLS backends so HTTPS
+# requests made with Qt Network fail inside OBS.
+
+find_package(CURL REQUIRED)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE CURL::libcurl)
 
 target_compile_options(
   ${CMAKE_PROJECT_NAME}
@@ -138,6 +147,10 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
   src/model-dock.hpp
   src/model-dock.cpp
   src/model-dock.ui
+  src/model-dock-item.hpp
+  src/model-dock-item.cpp
+  src/toggle-switch.hpp
+  src/toggle-switch.cpp
   src/model-worker.hpp
   src/model-worker.cpp
   src/model-worker-thread.hpp
@@ -152,6 +165,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
   src/object-classification-model-prediction.cpp
   src/prediction.hpp
   src/prediction.cpp
+  src/settings.hpp
+  src/settings.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

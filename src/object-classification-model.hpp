@@ -20,6 +20,9 @@ public:
 
 	bool prepare() override;
 	bool predict(const Frame& frame, QVector<PredictionPtr>& preds) override;
+
+	uint32_t inputWidth() const override;
+	uint32_t inputHeight() const override;
 	
 private:
 	

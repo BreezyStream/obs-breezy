@@ -3,21 +3,25 @@
 #include "model.hpp"
 
 #include <QObject>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QFile>
 #include <QSaveFile>
 #include <QScopedPointer>
+#include <QSharedPointer>
+#include <QHash>
 #include <QList>
+
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 struct ModelDownloadTask {
 	QString id;
 	QString url;
 	QString path;
 	Model* model;
-	QList<QMetaObject::Connection> connections;
 	QScopedPointer<QSaveFile> file;
-	QNetworkReply* reply = nullptr;
+	std::thread thread;
+	std::atomic<bool> cancelled = false;
+	std::chrono::steady_clock::time_point progressTime;
 };
 
 using ModelDownloadTaskPtr = QSharedPointer<ModelDownloadTask>;
@@ -30,11 +34,12 @@ class ModelLoader : public QObject {
 public:
 
 	explicit ModelLoader(QObject* parent = nullptr);
+	~ModelLoader() override;
 
 	void load(const ModelInfo& info);
-	
+
 signals:
-	
+
 	void downloadBegan(Model* model);
 	void downloadEnded(Model* model);
 	void downloadProgressed(Model* model, qint64 bytes, qint64 total);
@@ -44,31 +49,30 @@ signals:
 private:
 
 	QHash<QString, Model*> m_models;
-	
-	QNetworkAccessManager* m_nam;
 
 	const int m_maxConcurrentDownloads = 2;
 	QList<QString> m_downloadTasks;
 	QList<QString> m_downloadQueue;
 	QHash<QString, ModelDownloadTaskPtr> m_downloadItems;
-	
+
 	Model* createModel(const ModelInfo& info, const QString& path);
-	
+
 	QString getModelCacheBasePath() const;
 	QString getModelCacheFileName(const ModelInfo& info) const;
 	QString getModelCacheFilePath(const ModelInfo& info) const;
 	ModelDownloadTaskPtr getDownloadTask(const QString& key);
-	
+
 	void download();
 	void startDownloadTask(const QString& id);
 	void finishDownloadTask(const QString& id, bool success = true, const QString& error = "");
-	void downloadTaskProgress(const QString& id, qint64 bytes, qint64 total);
-	void downloadTaskFinished(const QString& id);
-	void downloadTaskReceivedData(const QString& id);
+	void runDownloadTask(ModelDownloadTaskPtr task);
 
 private slots:
-	
+
+	void downloadTaskProgress(const QString& id, qint64 bytes, qint64 total);
+	void downloadTaskFinished(const QString& id, const QString& error);
+
 	void onModelLoaded(Model* model);
 	void onModelFailed(Model* model);
-	
+
 };

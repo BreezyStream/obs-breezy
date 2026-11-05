@@ -82,6 +82,9 @@ obs_websocket_request_model_load(obs_data_t *request_data, obs_data_t *response_
 				
 				obs_data_t* version = obs_data_get_obj(item, "version");
 				info.version = QString(obs_data_get_string(version, "label"));
+				info.versionMajor = (int) obs_data_get_int(version, "major");
+				info.versionMinor = (int) obs_data_get_int(version, "minor");
+				info.versionPatch = (int) obs_data_get_int(version, "patch");
 				obs_data_release(version);
 				
 			} else {
@@ -114,6 +117,22 @@ obs_websocket_request_model_load(obs_data_t *request_data, obs_data_t *response_
 				obs_data_array_release(files);
 			}
 			
+			obs_data_array* labels = obs_data_get_array(item, "labels");
+
+			if (labels) {
+
+				size_t count = obs_data_array_count(labels);
+
+				for (size_t i = 0; i < count; i++) {
+					obs_data_t* label = obs_data_array_item(labels, i);
+					info.labels.append(QString::fromUtf8(obs_data_get_string(label, "id")));
+					info.labelTitles.append(QString::fromUtf8(obs_data_get_string(label, "title")));
+					obs_data_release(label);
+				}
+
+				obs_data_array_release(labels);
+			}
+
 			obs_data_t* specs = obs_data_get_obj(item, "specs");
 
 			if (specs) {
@@ -275,7 +294,13 @@ Breezy::Breezy(QObject* parent) : QObject(parent) {
 
 	m_dock = new ModelDock(window);
 
-	m_worker = new ModelWorker(this);
+	m_dock->setUnifyVersions(m_settings.unifyVersions());
+
+	connect(m_dock, &ModelDock::modelEnabledChanged, this, &Breezy::onModelEnabledChanged);
+	connect(m_dock, &ModelDock::modelInferenceRateChanged, this, &Breezy::onModelInferenceRateChanged);
+	connect(m_dock, &ModelDock::unifyVersionsChanged, this, &Breezy::onUnifyVersionsChanged);
+
+	m_worker = new ModelWorker(this, m_settings.unifyVersions());
 	m_thread = new ModelWorkerThread(this);
 	m_worker->moveToThread(m_thread);
 
@@ -287,6 +312,7 @@ Breezy::Breezy(QObject* parent) : QObject(parent) {
 	connect(m_worker, &ModelWorker::modelDownloadProgressed, this, &Breezy::onModelDownloadProgressed);
 	connect(m_worker, &ModelWorker::modelLoaded, this, &Breezy::onModelLoaded);
 	connect(m_worker, &ModelWorker::modelFailed, this, &Breezy::onModelFailed);
+	connect(m_worker, &ModelWorker::modelUpdated, this, &Breezy::onModelUpdated);
 	connect(m_worker, &ModelWorker::predictionBegan, this, &Breezy::onPredictionBegan);
 	connect(m_worker, &ModelWorker::predictionEnded, this, &Breezy::onPredictionEnded);
 	connect(m_worker, &ModelWorker::predicted, this, &Breezy::onPredicted);
@@ -314,7 +340,14 @@ Breezy::~Breezy() {
 
 void
 Breezy::loadModel(const ModelInfo& info) {
-	emit loadModelRequested(info);
+
+	auto settings = m_settings.model(info.key);
+
+	ModelInfo copy = info;
+	copy.enabled = settings.enabled;
+	copy.inferenceRateOverride = settings.inferenceRate;
+
+	emit loadModelRequested(copy);
 }
 
 void
@@ -338,27 +371,50 @@ Breezy::onCapture(FramePtr buffer) {
 
 void
 Breezy::onModelDownloadBegan(Model* model) {
-	m_dock->updateModelTableItem(model, ModelDock::ModelStatus::DOWNLOAD_BEGAN);
+	m_dock->updateModelItem(model, ModelDock::ModelStatus::DOWNLOAD_BEGAN);
 }
 
 void
 Breezy::onModelDownloadEnded(Model* model) {
-	m_dock->updateModelTableItem(model, ModelDock::ModelStatus::DOWNLOAD_ENDED);
+	m_dock->updateModelItem(model, ModelDock::ModelStatus::DOWNLOAD_ENDED);
 }
 
 void
 Breezy::onModelDownloadProgressed(Model* model, qint64 bytes, qint64 total) {
-	m_dock->updateModelTableItem(model, ModelDock::ModelStatus::DOWNLOADING, (float) bytes / (float) total);
+	m_dock->updateModelItem(model, ModelDock::ModelStatus::DOWNLOADING, (float) bytes / (float) total);
 }
 
 void
 Breezy::onModelLoaded(Model* model) {
-	m_dock->updateModelTableItem(model, ModelDock::ModelStatus::ACTIVE);
+	m_dock->updateModelItem(model, ModelDock::ModelStatus::ACTIVE);
 }
 
 void
 Breezy::onModelFailed(Model* model) {
-	m_dock->updateModelTableItem(model, ModelDock::ModelStatus::FAILED);
+	m_dock->updateModelItem(model, ModelDock::ModelStatus::FAILED);
+}
+
+void
+Breezy::onModelUpdated(Model* model) {
+	m_dock->refreshModelItem(model);
+}
+
+void
+Breezy::onModelEnabledChanged(const QString& key, bool enabled) {
+	m_settings.setModelEnabled(key, enabled);
+	emit modelEnabledRequested(key, enabled);
+}
+
+void
+Breezy::onModelInferenceRateChanged(const QString& key, double rate) {
+	m_settings.setModelInferenceRate(key, rate);
+	emit modelInferenceRateRequested(key, rate);
+}
+
+void
+Breezy::onUnifyVersionsChanged(bool unify) {
+	m_settings.setUnifyVersions(unify);
+	emit unifyVersionsRequested(unify);
 }
 
 void
@@ -377,6 +433,8 @@ Breezy::onPredicted(QVector<PredictionPtr> preds) {
 	if (preds.isEmpty()) {
 		return;
 	}
+
+	m_dock->updateModelScores(preds);
 	
 	obs_data_t* payload = obs_data_create();
 
@@ -397,7 +455,7 @@ Breezy::onPredicted(QVector<PredictionPtr> preds) {
 		if (auto value = qSharedPointerDynamicCast<ObjectClassificationModelPrediction>(pred)) {
 
 			obs_data_set_double(entry, "score", value->score());
-			obs_data_set_double(entry, "label", value->label());
+			obs_data_set_string(entry, "label", value->label().toUtf8().constData());
 
 		}
 

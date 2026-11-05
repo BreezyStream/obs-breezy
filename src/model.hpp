@@ -4,10 +4,13 @@
 #include "frame-buffer.hpp"
 #include "prediction.hpp"
 
+#include <atomic>
+#include <climits>
 #include <chrono>
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QFileInfo>
 
@@ -30,8 +33,22 @@ struct ModelInfo {
 	QString version;
 
 	ModelSpecs specs;
-		
+
+	// Label ids, in the order of the model's outputs.
+	QStringList labels;
+
+	// Label titles, in the same order as the ids.
+	QStringList labelTitles;
+
+	// Unversioned ("latest") snapshots rank above every published version.
+	int versionMajor = INT_MAX;
+	int versionMinor = INT_MAX;
+	int versionPatch = INT_MAX;
+
 	double inferenceRate = 10.0;
+	double inferenceRateOverride = 0.0; // 0 means no override
+
+	bool enabled = true;
 
 };
 
@@ -76,9 +93,25 @@ public:
 	const ModelSpecs specs() const {
 		return m_specs;
 	}
+
+	const QStringList& labels() const {
+		return m_labels;
+	}
+
+	const QStringList& labelTitles() const {
+		return m_labelTitles;
+	}
 	
 	double inferenceRate() const {
 		return m_inferenceRate;
+	}
+
+	double defaultInferenceRate() const {
+		return m_defaultInferenceRate;
+	}
+
+	bool inferenceRateOverridden() const {
+		return m_inferenceRate != m_defaultInferenceRate;
 	}
 	
 	QString path() const {
@@ -89,14 +122,22 @@ public:
 		return m_enabled;
 	}
 
-	void setInferenceRate(double fps) {
-		m_inferenceRate = fps;
+	Model* supersededBy() const {
+		return m_supersededBy;
 	}
-	
+
 	void setEnabled(bool enabled) {
 		m_enabled = enabled;
 	}
-		
+
+	void setSupersededBy(Model* model) {
+		m_supersededBy = model;
+	}
+
+	void setInferenceRate(double fps);
+
+	bool isNewerThan(const Model* other) const;
+
 	explicit Model(const ModelInfo& info, const QString& path, QObject* parent = nullptr);
 	~Model() = default;
 
@@ -107,6 +148,13 @@ public:
 	
 	virtual bool prepare() = 0;
 	virtual bool predict(const Frame& frame, QVector<PredictionPtr>& preds) = 0;
+
+	/*
+	 * Width and height of the frames the model takes, 0 when unknown.
+	 */
+
+	virtual uint32_t inputWidth() const { return 0; }
+	virtual uint32_t inputHeight() const { return 0; }
 	
 signals:
 	void loaded(Model* model);
@@ -127,12 +175,22 @@ private:
 	QString m_version = "";
 	
 	ModelSpecs m_specs;
-		
-	double m_inferenceRate = 10.0;
-	
+
+	QStringList m_labels;
+	QStringList m_labelTitles;
+
+	int m_versionMajor = 0;
+	int m_versionMinor = 0;
+	int m_versionPatch = 0;
+
+	double m_defaultInferenceRate = 10.0;
+
 	QString m_path = "";
-	
-	bool m_enabled = true;
+
+	// Written on the worker thread, read by the dock on the main thread.
+	std::atomic<double> m_inferenceRate { 10.0 };
+	std::atomic<bool>   m_enabled { true };
+	std::atomic<Model*> m_supersededBy { nullptr };
 	
 	clock::duration   m_predictionInterval = clock::duration::zero();
 	clock::time_point m_lastPredictionTime = clock::time_point {};

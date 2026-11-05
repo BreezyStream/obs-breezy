@@ -10,6 +10,7 @@
 FrameReader::FrameReader(QObject* parent) : QObject(parent) {
 	obs_enter_graphics();
 	m_texture = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+	m_scaled = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	obs_leave_graphics();
 }
 
@@ -20,6 +21,7 @@ FrameReader::FrameReader(QObject* parent) : QObject(parent) {
 FrameReader::~FrameReader() {
 	obs_enter_graphics();
 	if (m_texture) gs_texrender_destroy(m_texture);
+	if (m_scaled) gs_texrender_destroy(m_scaled);
 	if (m_surface) gs_stagesurface_destroy(m_surface);
 	obs_leave_graphics();
 }
@@ -29,7 +31,7 @@ FrameReader::~FrameReader() {
 //-----------------------------------------------------------------------------
 
 bool
-FrameReader::read(obs_source_t* target, uint32_t w, uint32_t h) {
+FrameReader::read(obs_source_t* target, uint32_t sw, uint32_t sh, uint32_t w, uint32_t h) {
 
 	if (target == nullptr) {
 		return false;
@@ -54,7 +56,7 @@ FrameReader::read(obs_source_t* target, uint32_t w, uint32_t h) {
 
 	gs_texrender_reset(m_texture);
 
-	if (gs_texrender_begin(m_texture, w, h) == false) {
+	if (gs_texrender_begin(m_texture, sw, sh) == false) {
 		return false;
 	}
 
@@ -63,8 +65,8 @@ FrameReader::read(obs_source_t* target, uint32_t w, uint32_t h) {
 	gs_clear(GS_CLEAR_COLOR, &clear, 0.f, 0);
 
 	gs_ortho(
-		0.f, (float) w,
-		0.f, (float) h,
+		0.f, (float) sw,
+		0.f, (float) sh,
 		-100.f,
 		+100.f
 	);
@@ -89,9 +91,64 @@ FrameReader::read(obs_source_t* target, uint32_t w, uint32_t h) {
         return false;
     }
 
+	if (w != sw ||
+		h != sh) {
+
+		texture = scale(texture, w, h);
+
+		if (texture == nullptr) {
+			return false;
+		}
+	}
+
     gs_stage_texture(m_surface, texture);
 
     return true;
+}
+
+gs_texture_t*
+FrameReader::scale(gs_texture_t* texture, uint32_t w, uint32_t h) {
+
+	/*
+	 * Draws the full size frame into the target size with the default
+	 * effect, its sampler is linear so each pixel is a bilinear sample of
+	 * the full frame at its center.
+	 */
+
+	gs_effect_t* effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_eparam_t* image = gs_effect_get_param_by_name(effect, "image");
+
+	gs_texrender_reset(m_scaled);
+
+	if (gs_texrender_begin(m_scaled, w, h) == false) {
+		return nullptr;
+	}
+
+	vec4 clear; vec4_zero(&clear);
+
+	gs_clear(GS_CLEAR_COLOR, &clear, 0.f, 0);
+
+	gs_ortho(
+		0.f, (float) w,
+		0.f, (float) h,
+		-100.f,
+		+100.f
+	);
+
+	gs_blend_state_push();
+	gs_enable_blending(false);
+
+	gs_effect_set_texture(image, texture);
+
+	while (gs_effect_loop(effect, "Draw")) {
+		gs_draw_sprite(texture, 0, w, h);
+	}
+
+	gs_blend_state_pop();
+
+	gs_texrender_end(m_scaled);
+
+	return gs_texrender_get_texture(m_scaled);
 }
 
 bool

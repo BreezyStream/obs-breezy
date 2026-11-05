@@ -9,6 +9,8 @@
 
 #include <QObject>
 
+#include <chrono>
+
 class FrameCaptureFilter : public QObject {
 
 	Q_OBJECT
@@ -44,7 +46,10 @@ private:
 	FrameReader* m_reader = nullptr;
 	FrameBuffer* m_buffer = nullptr;
 	
+	std::chrono::steady_clock::time_point m_nextCaptureTime;
+
 	bool canCapture() const;
+	bool isCaptureDue();
 	bool isStreaming() const;
 	bool isRecording() const;
 	void processFrame(obs_source_t* target);

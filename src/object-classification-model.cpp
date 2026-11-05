@@ -88,6 +88,22 @@ ObjectClassificationModel::prepare() {
 		return false;
 	}
 
+	const auto& outputs = m_inter->outputs();
+
+	if (outputs.empty() == false) {
+
+		auto* out = m_inter->tensor(outputs[0]);
+
+		if (out && out->dims && out->dims->size > 0) {
+
+			const int count = out->dims->data[out->dims->size - 1];
+
+			if (count != labels().size()) {
+				qDebug() << "Tensorflow: Model has" << count << "outputs but" << labels().size() << "labels, extra outputs are ignored.";
+			}
+		}
+	}
+
 	auto* in = m_inter->tensor(inputs[0]);
 
 	qDebug()
@@ -117,6 +133,30 @@ ObjectClassificationModel::predict(const Frame& frame, QVector<PredictionPtr>& p
 	}
 
 	return resolve(frame, preds);
+}
+
+uint32_t
+ObjectClassificationModel::inputWidth() const {
+
+	if (m_inter == nullptr) {
+		return 0;
+	}
+
+	auto input = m_inter->tensor(m_inter->inputs()[0]);
+
+	return (input && input->dims && input->dims->size == 4) ? uint32_t(input->dims->data[2]) : 0;
+}
+
+uint32_t
+ObjectClassificationModel::inputHeight() const {
+
+	if (m_inter == nullptr) {
+		return 0;
+	}
+
+	auto input = m_inter->tensor(m_inter->inputs()[0]);
+
+	return (input && input->dims && input->dims->size == 4) ? uint32_t(input->dims->data[1]) : 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -322,12 +362,14 @@ ObjectClassificationModel::resolve(const Frame& frame, QVector<PredictionPtr>& p
 		}
 	}
 
+	const auto& labels = this->labels();
+
 	// Every label is sent with its score, the widget applies its own
 	// threshold and stability.
-	for (int i = 0; i < K; ++i) {
+	for (int i = 0; i < K && i < labels.size(); ++i) {
 
 		ObjectClassificationModelPredictionInfo info;
-		info.label = i;
+		info.label = labels[i];
 		info.score = probs[i];
 
 		PredictionPtr p = QSharedPointer<ObjectClassificationModelPrediction>(

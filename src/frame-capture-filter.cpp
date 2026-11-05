@@ -5,6 +5,7 @@
 
 #include <QDebug>
 
+
 //-----------------------------------------------------------------------------
 // OBS Callbacks
 //-----------------------------------------------------------------------------
@@ -78,11 +79,8 @@ FrameCaptureFilter::registerSource() {
 
 FrameCaptureFilter::FrameCaptureFilter(obs_data_t* config, obs_source_t* source, QObject* parent): QObject(parent), m_config(config), m_source(source) {
 	
-	const auto w = obs_source_get_base_width(source);
-	const auto h = obs_source_get_base_height(source);
-	
 	m_reader = new FrameReader();
-	m_buffer = new FrameBuffer(8, w, h, 4);
+	m_buffer = new FrameBuffer(8, 0, 0, 4);
 
 	connect(this, &FrameCaptureFilter::captured, Breezy::instance(), &Breezy::onCapture);
 	
@@ -141,7 +139,8 @@ FrameCaptureFilter::onSourceRender(gs_effect_t* effect) {
 	auto target = obs_filter_get_target(m_source);
 		
 	if (active &&
-		target) {
+		target &&
+		isCaptureDue()) {
 		processFrame(target);
 	}
 }
@@ -181,6 +180,45 @@ FrameCaptureFilter::canCapture() const {
 }
 
 bool
+FrameCaptureFilter::isCaptureDue() {
+
+	/*
+	 * Renders happen at the canvas frame rate, and more than once per frame
+	 * when the source is also in the preview or a projector. Only the renders
+	 * the models need are captured, extra renders of a frame come too early.
+	 */
+
+	using clock = std::chrono::steady_clock;
+
+	const auto rate = Breezy::instance()->captureRate();
+
+	if (rate <= 0.0) {
+		return false;
+	}
+
+	const auto now = clock::now();
+
+	if (now < m_nextCaptureTime) {
+		return false;
+	}
+
+	const auto interval = std::chrono::duration_cast<clock::duration>(
+		std::chrono::duration<double>(1.0 / rate)
+	);
+
+	/*
+	 * Keeps a steady cadence, unless captures fell behind (source hidden,
+	 * rate changed), then restarts from now.
+	 */
+
+	m_nextCaptureTime = (now - m_nextCaptureTime > interval)
+		? now + interval
+		: m_nextCaptureTime + interval;
+
+	return true;
+}
+
+bool
 FrameCaptureFilter::isStreaming() const {
 	return obs_frontend_streaming_active();
 }
@@ -193,15 +231,35 @@ FrameCaptureFilter::isRecording() const {
 void
 FrameCaptureFilter::processFrame(obs_source_t* target) {
 		
-	const auto w = obs_source_get_base_width(target);
-	const auto h = obs_source_get_base_height(target);
+	const auto sw = obs_source_get_base_width(target);
+	const auto sh = obs_source_get_base_height(target);
+
+	if (sw == 0 ||
+		sh == 0) {
+		return;
+	}
+
+	/*
+	 * Scaling to the models' input size happens on the GPU in a single
+	 * bilinear pass from the full frame, like the resize used in training.
+	 * Scaling in steps changes what the models see and their scores.
+	 */
+
+	auto w = Breezy::instance()->captureWidth();
+	auto h = Breezy::instance()->captureHeight();
+
+	if (w == 0 ||
+		h == 0) {
+		w = sw;
+		h = sh;
+	}
 
 	auto buffer = m_buffer->acquire();
 	if (buffer == nullptr) {
 		return;
 	}
 	
-	if (m_reader->read(target, w, h) == false) {
+	if (m_reader->read(target, sw, sh, w, h) == false) {
 		return;
 	}
 	

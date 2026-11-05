@@ -3,10 +3,11 @@
 #include "prediction.hpp"
 
 #include <QObject>
+#include <QString>
 
 struct ObjectClassificationModelPredictionInfo {
-	int   label;
-	float score;
+	QString label;
+	float   score;
 };
 
 class ObjectClassificationModelPrediction : public Prediction {
@@ -15,7 +16,7 @@ class ObjectClassificationModelPrediction : public Prediction {
 
 public:
 	
-	int label() {
+	QString label() const {
 		return m_label;
 	}
 	
@@ -27,7 +28,7 @@ public:
 
 private:
 	
-	int   m_label;
-	float m_score;
+	QString m_label;
+	float   m_score;
 		
 };

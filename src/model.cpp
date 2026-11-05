@@ -18,27 +18,55 @@ Model::Model(const ModelInfo& info, const QString& path, QObject* parent) : QObj
 	m_version = info.version;
 	
 	m_specs = info.specs;
-		
-	m_inferenceRate = info.inferenceRate;
-	
+	m_labels = info.labels;
+	m_labelTitles = info.labelTitles;
+
+	m_versionMajor = info.versionMajor;
+	m_versionMinor = info.versionMinor;
+	m_versionPatch = info.versionPatch;
+
+	m_defaultInferenceRate = info.inferenceRate;
+
 	m_path = path;
-	
-	if (m_inferenceRate <= 0.0) {
-		
-		m_predictionInterval = clock::duration::zero();
-		
-	} else {
-		
-		m_predictionInterval = std::chrono::duration_cast<clock::duration>(
-			std::chrono::duration<double>(1.0 / m_inferenceRate)
-		);
-		
-	}
+
+	m_enabled = info.enabled;
+
+	setInferenceRate(info.inferenceRateOverride > 0.0 ? info.inferenceRateOverride : info.inferenceRate);
 }
 
 //------------------------------------------------------------------------------
 // Public
 //------------------------------------------------------------------------------
+
+void
+Model::setInferenceRate(double fps) {
+
+	m_inferenceRate = fps;
+
+	if (fps <= 0.0) {
+
+		m_predictionInterval = clock::duration::zero();
+
+	} else {
+
+		m_predictionInterval = std::chrono::duration_cast<clock::duration>(
+			std::chrono::duration<double>(1.0 / fps)
+		);
+
+	}
+
+	// Restart the schedule so the new rate applies right away.
+	m_nextPredictionTime = clock::time_point {};
+}
+
+bool
+Model::isNewerThan(const Model* other) const {
+
+	if (m_versionMajor != other->m_versionMajor) return m_versionMajor > other->m_versionMajor;
+	if (m_versionMinor != other->m_versionMinor) return m_versionMinor > other->m_versionMinor;
+
+	return m_versionPatch > other->m_versionPatch;
+}
 
 bool
 Model::ready() {
@@ -73,7 +101,12 @@ Model::execute(const Frame& frame, QVector<PredictionPtr>& preds) {
 		m_nextPredictionTime = now + m_predictionInterval;
 	}
 	
-	if (now < m_nextPredictionTime) {
+	/*
+	 * Frames arrive at about the inference rate, a frame that arrives a bit
+	 * early is still used instead of waiting a whole capture for the next.
+	 */
+
+	if (now + m_predictionInterval / 4 < m_nextPredictionTime) {
 		return;
 	}
 	

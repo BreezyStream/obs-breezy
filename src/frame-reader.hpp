@@ -15,14 +15,17 @@ public:
 	explicit FrameReader(QObject* parent = nullptr);
 	~FrameReader();
 
-	bool read(obs_source_t* target, uint32_t w, uint32_t h);
+	bool read(obs_source_t* target, uint32_t sw, uint32_t sh, uint32_t w, uint32_t h);
 	bool copy(Frame& frame);
 
 private:
 
 	gs_texrender_t* m_texture = nullptr;
+	gs_texrender_t* m_scaled = nullptr;
 	gs_stagesurf_t* m_surface = nullptr;
 	uint32_t m_sw = 0;
 	uint32_t m_sh = 0;
+
+	gs_texture_t* scale(gs_texture_t* texture, uint32_t w, uint32_t h);
 
 };

@@ -2,13 +2,15 @@
 #include "model.hpp"
 #include "object-classification-model.hpp"
 
+#include "plugin-support.h"
+
 #include <obs-module.h>
+#include <curl/curl.h>
 
 #include <QObject>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QNetworkRequest>
 #include <QCoreApplication>
 
 #include <QDebug>
@@ -31,7 +33,21 @@ mkdir(const QString& filepath) {
 //------------------------------------------------------------------------------
 
 ModelLoader::ModelLoader(QObject* parent) : QObject(parent) {
-	m_nam = new QNetworkAccessManager(this);
+	curl_global_init(CURL_GLOBAL_DEFAULT);
+}
+
+ModelLoader::~ModelLoader() {
+
+	for (auto& task : m_downloadItems) {
+
+		task->cancelled = true;
+
+		if (task->thread.joinable()) {
+			task->thread.join();
+		}
+	}
+
+	curl_global_cleanup();
 }
 
 //------------------------------------------------------------------------------
@@ -160,41 +176,123 @@ ModelLoader::startDownloadTask(const QString &id) {
 	task->file.reset(new QSaveFile(task->path));
 
 	if (task->file->open(QIODevice::WriteOnly) == false) {
-		finishDownloadTask(id, false, "Unable to write file.");
+		finishDownloadTask(id, false, "Unable to write file " + task->path);
 		return;
 	}
 
 	emit downloadBegan(task->model);
-	
-	QNetworkRequest req(QUrl(task->url));
 
-	#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-		req.setTransferTimeout(60000);
-		req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-		req.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
-	#endif
+	/*
+	 * Downloads use libcurl instead of Qt Network, OBS doesn't ship the Qt
+	 * TLS backends so HTTPS requests made with Qt fail inside OBS.
+	 */
 
-	req.setRawHeader("Accept-Encoding", "gzip, deflate, br");
+	task->thread = std::thread([this, task] () {
+		runDownloadTask(task);
+	});
+}
 
-	task->reply = m_nam->get(req);
+void
+ModelLoader::runDownloadTask(ModelDownloadTaskPtr task) {
 
-	task->connections << connect(task->reply, &QNetworkReply::downloadProgress, this,
-		[this, id] (qint64 bytes, qint64 total) {
-			downloadTaskProgress(id, bytes, total);
+	/*
+	 * Runs on the download thread, results are sent back to the main thread
+	 * with queued invocations. The file is only written here until the
+	 * thread is joined.
+	 */
+
+	auto onWrite = [] (char* data, size_t size, size_t count, void* user) -> size_t {
+
+		auto task = static_cast<ModelDownloadTask*>(user);
+
+		qint64 length = static_cast<qint64>(size * count);
+
+		if (task->file->write(data, length) != length) {
+			return 0;
 		}
-	);
 
-	task->connections << connect(task->reply, &QNetworkReply::finished, this,
-		[this, id] () {
-			downloadTaskFinished(id);
-		}
-	);
+		return static_cast<size_t>(length);
+	};
 
-	task->connections << connect(task->reply, &QIODevice::readyRead, this,
-		[this, id] () {
-			downloadTaskReceivedData(id);
+	auto onProgress = [] (void* user, curl_off_t total, curl_off_t bytes, curl_off_t, curl_off_t) -> int {
+
+		auto pair = static_cast<std::pair<ModelLoader*, ModelDownloadTask*>*>(user);
+
+		auto loader = pair->first;
+		auto task = pair->second;
+
+		if (task->cancelled) {
+			return 1;
 		}
-	);
+
+		auto now = std::chrono::steady_clock::now();
+
+		if (now - task->progressTime < std::chrono::milliseconds(100) && bytes < total) {
+			return 0;
+		}
+
+		task->progressTime = now;
+
+		auto id = task->id;
+
+		QMetaObject::invokeMethod(loader, [loader, id, bytes, total] () {
+			loader->downloadTaskProgress(id, bytes, total);
+		}, Qt::QueuedConnection);
+
+		return 0;
+	};
+
+	auto url = task->url.toStdString();
+	auto agent = std::string("obs-breezy/") + PLUGIN_VERSION;
+	auto progress = std::make_pair(this, task.data());
+
+	char message[CURL_ERROR_SIZE] = {};
+
+	CURL* curl = curl_easy_init();
+
+	QString error;
+
+	if (curl) {
+
+		curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+		curl_easy_setopt(curl, CURLOPT_USERAGENT, agent.c_str());
+		curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, message);
+		curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+		curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+		curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+		curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+		curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+		curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+		curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, static_cast<curl_write_callback>(onWrite));
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, task.data());
+		curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, static_cast<curl_xferinfo_callback>(onProgress));
+		curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress);
+		curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+
+		#ifdef _WIN32
+			curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_REVOKE_BEST_EFFORT);
+		#endif
+
+		CURLcode code = curl_easy_perform(curl);
+
+		if (code != CURLE_OK) {
+			error = QString::fromUtf8(message[0] ? message : curl_easy_strerror(code));
+		}
+
+		curl_easy_cleanup(curl);
+
+	} else {
+
+		error = "Unable to initialize libcurl.";
+
+	}
+
+	auto id = task->id;
+
+	QMetaObject::invokeMethod(this, [this, id, error] () {
+		downloadTaskFinished(id, error);
+	}, Qt::QueuedConnection);
 }
 
 void
@@ -216,6 +314,11 @@ ModelLoader::finishDownloadTask(const QString& id, bool success, const QString& 
 		}
 		
 	} else {
+
+		blog(LOG_WARNING, "[obs-breezy] Model download failed (%s): %s",
+			task->url.toUtf8().constData(),
+			error.toUtf8().constData()
+		);
 		
 		emit failed(model);
 
@@ -228,6 +331,9 @@ void
 ModelLoader::downloadTaskProgress(const QString& key, qint64 bytes, qint64 total) {
 
 	auto task = getDownloadTask(key);
+	if (task == nullptr) {
+		return;
+	}
 
 	emit downloadProgressed(
 		task->model,
@@ -237,38 +343,29 @@ ModelLoader::downloadTaskProgress(const QString& key, qint64 bytes, qint64 total
 }
 
 void
-ModelLoader::downloadTaskFinished(const QString& id) {
+ModelLoader::downloadTaskFinished(const QString& id, const QString& error) {
 	
 	auto task = getDownloadTask(id);
-
-	QScopedPointer<QNetworkReply, QScopedPointerDeleteLater> guard(task->reply);
-
-	for (auto &connection : task->connections) {
-		QObject::disconnect(connection);
-	}
-		
-	task->connections.clear();
-	
-	if (task->reply->error() == QNetworkReply::NoError) {
-		
-		if (task->file->commit()) {
-			finishDownloadTask(id);
-		} else {
-			finishDownloadTask(id, false, "Commit failed.");
-		}
-				
+	if (task == nullptr) {
 		return;
 	}
-	
-	task->file->cancelWriting();
 
-	finishDownloadTask(id, false, "Download failed.");
-}
+	if (task->thread.joinable()) {
+		task->thread.join();
+	}
 
-void
-ModelLoader::downloadTaskReceivedData(const QString& key) {
-	auto task = getDownloadTask(key);
-	task->file->write(task->reply->readAll());
+	if (error.isEmpty() == false) {
+		task->file->cancelWriting();
+		finishDownloadTask(id, false, error);
+		return;
+	}
+
+	if (task->file->commit() == false) {
+		finishDownloadTask(id, false, "Unable to save file " + task->path);
+		return;
+	}
+
+	finishDownloadTask(id);
 }
 
 //------------------------------------------------------------------------------
