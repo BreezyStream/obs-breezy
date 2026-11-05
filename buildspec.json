@@ -39,7 +39,7 @@
     "name": "obs-breezy",
     "displayName": "Breezy OBS Plugin",
     "bundleId": "stream.breezy.obs-breezy",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "author": "Jean-Philippe Dery",
     "website": "https://breezy.stream",
     "email": "info@breezy.stream"
