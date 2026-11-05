@@ -40,8 +40,8 @@ ToggleSwitch::paintEvent(QPaintEvent* event) {
 	auto knob = isChecked() ? pal.color(QPalette::HighlightedText) : pal.color(QPalette::Light);
 
 	if (isEnabled() == false) {
-		track.setAlphaF(0.4);
-		knob.setAlphaF(0.6);
+		track.setAlphaF(0.4f);
+		knob.setAlphaF(0.6f);
 	}
 
 	const QRectF rect((width() - kTrackWidth) / 2.0, (height() - kTrackHeight) / 2.0, kTrackWidth, kTrackHeight);

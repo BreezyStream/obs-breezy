@@ -22,7 +22,7 @@ static constexpr qreal kCardTint = 0.06;
 static constexpr qreal kCardTintHover = 0.10;
 
 static constexpr qreal kChevronSize = 3.5;
-static constexpr qreal kChevronOpacity = 0.6;
+static constexpr float kChevronOpacity = 0.6f;
 
 static QColor
 mixColor(const QColor& a, const QColor& b, qreal amount) {
