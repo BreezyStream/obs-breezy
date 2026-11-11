@@ -2,6 +2,7 @@
 #include "model-worker.hpp"
 #include "model-loader.hpp"
 #include "prediction.hpp"
+#include "object-classification-model-prediction.hpp"
 #include "breezy.hpp"
 
 #include <obs.h>
@@ -83,6 +84,42 @@ ModelWorker::predict(FramePtr frame) {
 		model->execute(*frame, preds);
 	}
 
+	/*
+	 * Superseded versions don't run, they receive the predictions of the
+	 * version that replaces them under their own identity. Widgets and
+	 * display rules match predictions by model id and version, each one keeps
+	 * receiving predictions for the version it asked for.
+	 */
+
+	if (m_unifyVersions && preds.isEmpty() == false) {
+
+		const auto count = preds.size();
+
+		for (auto model : m_models) {
+
+			auto newest = model->supersededBy();
+			if (newest == nullptr || model->enabled() == false) {
+				continue;
+			}
+
+			for (qsizetype i = 0; i < count; i++) {
+
+				auto pred = qSharedPointerDynamicCast<ObjectClassificationModelPrediction>(preds[i]);
+				if (pred == nullptr || pred->model() != newest) {
+					continue;
+				}
+
+				ObjectClassificationModelPredictionInfo info;
+				info.label = pred->label();
+				info.score = pred->score();
+
+				preds.append(QSharedPointer<ObjectClassificationModelPrediction>(
+					new ObjectClassificationModelPrediction(info, model)
+				));
+			}
+		}
+	}
+
 	if (preds.size() > 0) {
 		emit predicted(preds);
 	}
@@ -95,8 +132,8 @@ ModelWorker::refresh() {
 
 	/*
 	 * When unifying, only the most recent enabled version of each model runs,
-	 * the others are marked as superseded by it. Widgets match predictions by
-	 * model id, so they keep receiving them from the newer version.
+	 * the others are marked as superseded by it and receive its predictions
+	 * (see predict).
 	 */
 
 	QHash<QString, Model*> newest;

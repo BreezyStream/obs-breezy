@@ -1,10 +1,12 @@
 #include "object-classification-model.hpp"
 #include "object-classification-model-prediction.hpp"
 
+#include <array>
+#include <cmath>
+
 #include <QDebug>
 
-#include "tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h"
-#include "tensorflow/lite/kernels/register.h"
+#include <onnxruntime_session_options_config_keys.h>
 
 static inline void sigmoid_inplace(std::vector<float>& v) {
 	for (float& x : v) x = float(1.0 / (1.0 + std::exp(-double(x))));
@@ -23,14 +25,9 @@ ObjectClassificationModel::ObjectClassificationModel(const ModelInfo& info, cons
 //-----------------------------------------------------------------------------
 
 ObjectClassificationModel::~ObjectClassificationModel()  {
-
-	if (m_delegate) {
-		TfLiteXNNPackDelegateDelete(m_delegate);
-		m_delegate = nullptr;
-	}
-
-	m_inter.reset();
-	m_model.reset();
+	m_inputTensor.reset();
+	m_outputTensor.reset();
+	m_session.reset();
 }
 
 //-----------------------------------------------------------------------------
@@ -39,81 +36,114 @@ ObjectClassificationModel::~ObjectClassificationModel()  {
 
 bool
 ObjectClassificationModel::prepare() {
-	qDebug() << "Prepare frame";
-	m_model = tflite::FlatBufferModel::BuildFromFile(path().toStdString().c_str());
 
-	if (m_model == nullptr) {
-		qDebug() << "Tensorflow: Failed to load model file" << path();
+	if (OnnxRuntime::load() == false) {
 		return false;
 	}
 
-	tflite::ops::builtin::BuiltinOpResolver resolver;
-	tflite::InterpreterBuilder builder(*m_model, resolver);
-	builder(&m_inter);
+	try {
 
-	if (m_inter == nullptr) {
-		qDebug() << "Tensorflow: Failed to create interpreter.";
-		return false;
-	}
+		Ort::SessionOptions options;
+		options.SetIntraOpNumThreads(m_threads);
+		options.SetInterOpNumThreads(1);
+		options.SetExecutionMode(ORT_SEQUENTIAL);
+		options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
-	if (m_threads > 0) {
-		m_inter->SetNumThreads(m_threads);
-	}
+		// Idle threads sleep instead of spinning, OBS needs the CPU more than
+		// the model needs the latency.
+		options.AddConfigEntry(kOrtSessionOptionsConfigAllowIntraOpSpinning, "0");
+		options.AddConfigEntry(kOrtSessionOptionsConfigAllowInterOpSpinning, "0");
 
-	if (m_xnnpack) {
+#ifdef _WIN32
+		std::wstring file = path().toStdWString();
+#else
+		std::string file = path().toStdString();
+#endif
 
-		TfLiteXNNPackDelegateOptions opts = TfLiteXNNPackDelegateOptionsDefault();
-		opts.num_threads = 1;
+		m_session = std::make_unique<Ort::Session>(OnnxRuntime::env(), file.c_str(), options);
 
-		m_delegate = TfLiteXNNPackDelegateCreate(&opts);
-
-		if (m_delegate) {
-			if (m_inter->ModifyGraphWithDelegate(m_delegate) != kTfLiteOk) {
-				qDebug() << "Tensorflow: XNNPACK delegate attach failed; continuing on CPU.";
-				TfLiteXNNPackDelegateDelete(m_delegate);
-				m_delegate = nullptr;
-			}
+		if (m_session->GetInputCount() < 1 ||
+			m_session->GetOutputCount() < 1) {
+			qDebug() << "ONNX: Model has no input or output.";
+			return false;
 		}
-	}
 
-	if (m_inter->AllocateTensors() != kTfLiteOk) {
-		qDebug() << "Tensorflow: Failed to allocate tensors.";
-		return false;
-	}
+		Ort::AllocatorWithDefaultOptions allocator;
+		m_inputName = m_session->GetInputNameAllocated(0, allocator).get();
+		m_outputName = m_session->GetOutputNameAllocated(0, allocator).get();
 
-	const auto& inputs = m_inter->inputs();
+		//
+		// Input: float32 NHWC, batch of 1.
+		//
 
-	if (inputs.empty()) {
-		qDebug() << "Tensorflow: Model has no input tensors.";
-		return false;
-	}
+		// The shape info is a view into the type info, which must outlive it.
+		Ort::TypeInfo inputType = m_session->GetInputTypeInfo(0);
+		auto inputInfo = inputType.GetTensorTypeAndShapeInfo();
+		auto inputShape = inputInfo.GetShape();
 
-	const auto& outputs = m_inter->outputs();
-
-	if (outputs.empty() == false) {
-
-		auto* out = m_inter->tensor(outputs[0]);
-
-		if (out && out->dims && out->dims->size > 0) {
-
-			const int count = out->dims->data[out->dims->size - 1];
-
-			if (count != labels().size()) {
-				qDebug() << "Tensorflow: Model has" << count << "outputs but" << labels().size() << "labels, extra outputs are ignored.";
-			}
+		if (inputInfo.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+			inputShape.size() != 4 ||
+			inputShape[1] <= 0 ||
+			inputShape[2] <= 0 ||
+			inputShape[3] <= 2) {
+			qDebug() << "ONNX: Unsupported input, expected a float32 [1, H, W, C] tensor.";
+			return false;
 		}
+
+		m_inputH = int(inputShape[1]);
+		m_inputW = int(inputShape[2]);
+		m_inputC = int(inputShape[3]);
+
+		//
+		// Output: float32 [1, K] or [K], one probability per label.
+		//
+
+		Ort::TypeInfo outputType = m_session->GetOutputTypeInfo(0);
+		auto outputInfo = outputType.GetTensorTypeAndShapeInfo();
+		auto outputShape = outputInfo.GetShape();
+
+		if (outputInfo.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+			outputShape.empty() ||
+			outputShape.size() > 2 ||
+			outputShape.back() <= 0) {
+			qDebug() << "ONNX: Unsupported output, expected a float32 [1, K] tensor.";
+			return false;
+		}
+
+		m_outputK = int(outputShape.back());
+
+		if (m_outputK != labels().size()) {
+			qDebug() << "ONNX: Model has" << m_outputK << "outputs but" << labels().size() << "labels, extra outputs are ignored.";
+		}
+
+		//
+		// Tensors are bound to buffers owned by the model so inference never
+		// allocates.
+		//
+
+		m_input.assign(size_t(m_inputH) * m_inputW * m_inputC, 0.f);
+		m_output.assign(size_t(m_outputK), 0.f);
+
+		auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
+		std::array<int64_t, 4> inputDims = { 1, m_inputH, m_inputW, m_inputC };
+		std::array<int64_t, 2> outputDims = { 1, m_outputK };
+
+		m_inputTensor = std::make_unique<Ort::Value>(Ort::Value::CreateTensor<float>(
+			memory, m_input.data(), m_input.size(), inputDims.data(), inputDims.size()
+		));
+
+		m_outputTensor = std::make_unique<Ort::Value>(Ort::Value::CreateTensor<float>(
+			memory, m_output.data(), m_output.size(), outputDims.data() + (outputShape.size() == 2 ? 0 : 1), outputShape.size()
+		));
+
+	} catch (const Ort::Exception& e) {
+		qDebug() << "ONNX: Failed to load model" << path() << e.what();
+		m_session.reset();
+		return false;
 	}
 
-	auto* in = m_inter->tensor(inputs[0]);
-
-	qDebug()
-		<< "Tensorflow: Model is ready. Input idx: %d type: %d dims: %d x %d x %d x %d"
-		<< inputs[0]
-		<< in->type
-		<< (in->dims && in->dims->size > 0 ? in->dims->data[0] : -1)
-		<< (in->dims && in->dims->size > 1 ? in->dims->data[1] : -1)
-		<< (in->dims && in->dims->size > 2 ? in->dims->data[2] : -1)
-		<< (in->dims && in->dims->size > 3 ? in->dims->data[3] : -1);
+	qDebug() << "ONNX: Model is ready. Input:" << m_inputH << "x" << m_inputW << "x" << m_inputC << "Outputs:" << m_outputK;
 
 	return true;
 }
@@ -121,14 +151,22 @@ ObjectClassificationModel::prepare() {
 bool
 ObjectClassificationModel::predict(const Frame& frame, QVector<PredictionPtr>& preds) {
 
+	if (m_session == nullptr) {
+		return false;
+	}
+
 	bool ready = process(frame);
 	if (!ready) {
 		return false;
 	}
 
-	TfLiteStatus status = m_inter->Invoke();
+	const char* inputNames[] = { m_inputName.c_str() };
+	const char* outputNames[] = { m_outputName.c_str() };
 
-	if (status != kTfLiteOk) {
+	try {
+		m_session->Run(Ort::RunOptions{ nullptr }, inputNames, m_inputTensor.get(), 1, outputNames, m_outputTensor.get(), 1);
+	} catch (const Ort::Exception& e) {
+		qDebug() << "ONNX: Inference failed" << e.what();
 		return false;
 	}
 
@@ -137,26 +175,12 @@ ObjectClassificationModel::predict(const Frame& frame, QVector<PredictionPtr>& p
 
 uint32_t
 ObjectClassificationModel::inputWidth() const {
-
-	if (m_inter == nullptr) {
-		return 0;
-	}
-
-	auto input = m_inter->tensor(m_inter->inputs()[0]);
-
-	return (input && input->dims && input->dims->size == 4) ? uint32_t(input->dims->data[2]) : 0;
+	return uint32_t(m_inputW);
 }
 
 uint32_t
 ObjectClassificationModel::inputHeight() const {
-
-	if (m_inter == nullptr) {
-		return 0;
-	}
-
-	auto input = m_inter->tensor(m_inter->inputs()[0]);
-
-	return (input && input->dims && input->dims->size == 4) ? uint32_t(input->dims->data[1]) : 0;
+	return uint32_t(m_inputH);
 }
 
 //-----------------------------------------------------------------------------
@@ -166,27 +190,11 @@ ObjectClassificationModel::inputHeight() const {
 bool
 ObjectClassificationModel::process(const Frame& src) {
 	
-	auto inter = m_inter.get();
-	if (!inter) {
-		return false;
-	}
+	const int ih = m_inputH;
+	const int iw = m_inputW;
+	const int ic = m_inputC;
 
-	const int inputTensorIndex = inter->inputs()[0];
-
-	auto input = inter->tensor(inputTensorIndex);
-	if (!input ||
-		!input->dims) {
-		return false;
-	}
-
-	const int ib = input->dims->data[0];
-	const int ih = input->dims->data[1];
-	const int iw = input->dims->data[2];
-	const int ic = input->dims->data[3];
-
-
-	if (ib != 1 ||
-		ic <= 2) {
+	if (m_input.empty()) {
 		return false;
 	}
 
@@ -228,12 +236,12 @@ ObjectClassificationModel::process(const Frame& src) {
 		}
 	}
 
-	// Write into model's tensor depending on dtype
-	if (input->type == kTfLiteFloat32) {
+	// Write into the model's input buffer
+	{
 
 		auto s = specs();
 
-		float* dst         = input->data.f;
+		float* dst         = m_input.data();
 		const float scale  = s.inputValueMax - s.inputValueMin;
 		const float offset = s.inputValueMin;
 
@@ -293,65 +301,17 @@ ObjectClassificationModel::process(const Frame& src) {
 
 		return true;
 	}
-
-	return false;
 }
 
 bool
 ObjectClassificationModel::resolve(const Frame& frame, QVector<PredictionPtr>& predictions) {
 
-	auto inter = m_inter.get();
-	if (!inter) {
-		return false;
-	}
-
-	const auto& outs = inter->outputs();
-
-	if (outs.size() < 1) {
-		return false;
-	}
-
-	const int outIdx = outs[0];
-	const TfLiteTensor* out = inter->tensor(outIdx);
-
-	if (!out ||
-		!out->dims) {
-		return false;
-	}
-
-	int rank = out->dims->size;
-	if (rank != 2 &&
-		rank != 1) {
-		return false;
-	}
-
-	int K = (rank == 2) ? out->dims->data[1] : out->dims->data[0];
+	const int K = m_outputK;
 	if (K <= 0) {
 		return false;
 	}
 
-	std::vector<float> probs(K, 0.f);
-
-	 if (out->type == kTfLiteFloat32) {
-	   const float* p = out->data.f;
-	   if (rank == 2) p += 0; // [1,K]
-	   std::copy(p, p + K, probs.begin());
-	 } else if (out->type == kTfLiteUInt8 || out->type == kTfLiteInt8) {
-	   const float scale = out->params.scale;
-	   const int   zp    = out->params.zero_point;
-	   if (scale <= 0.f) return false;
-
-	   if (out->type == kTfLiteUInt8) {
-		 const uint8_t* q = out->data.uint8;
-		 for (int i=0;i<K;++i) probs[i] = scale * (int(q[i]) - zp);
-	   } else {
-		 const int8_t* q = out->data.int8;
-		 for (int i=0;i<K;++i) probs[i] = scale * (int(q[i]) - zp);
-	   }
-	 } else {
-	   qDebug() << "Tensorflow: Unsupported output dtype:" << out->type;
-	   return false;
-	 }
+	std::vector<float> probs(m_output.begin(), m_output.end());
 
 	// Each output is an independent per-label probability (sigmoid head).
 	// If they fall outside [0,1] they are logits, convert them.

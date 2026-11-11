@@ -14,16 +14,6 @@ include(helpers)
 
 add_library(${CMAKE_PROJECT_NAME} MODULE)
 
-if(WIN32)
-  # Tell TF Lite / XNNPACK we link static libs on Windows
-  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    TFLITE_STATIC_LIBRARY
-    TF_LITE_STATIC_LIBRARY
-    TFL_STATIC_LIBRARY
-    XNNPACK_DELEGATE_STATIC
-  )
-endif()
-
 if (MSVC)
   target_link_options(${CMAKE_PROJECT_NAME} PRIVATE /WX:NO /IGNORE:4286)
 endif()
@@ -163,6 +153,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
   src/object-classification-model.cpp
   src/object-classification-model-prediction.hpp
   src/object-classification-model-prediction.cpp
+  src/onnx-runtime.hpp
+  src/onnx-runtime.cpp
   src/prediction.hpp
   src/prediction.cpp
   src/settings.hpp
@@ -172,116 +164,97 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
 #-------------------------------------------------------------------------------
-# Tensorflow
+# ONNX Runtime
 #-------------------------------------------------------------------------------
 
-set(TFLITE_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tensorflow-src")
-set(TFLITE_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tflite-lib")
-set(TFLITE_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tflite-build")
+# The prebuilt runtime is shipped next to the plugin under a Breezy specific
+# name and loaded at runtime by absolute path (see src/onnx-runtime.cpp). Other
+# OBS plugins bundle their own onnxruntime library, a shared name would make
+# the process resolve one plugin's copy for another.
 
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${TFLITE_SRC_DIR}" "${TFLITE_LIB_DIR}/include")
+set(ORT_VERSION "1.31.1")
+
+if(APPLE)
+  set(ORT_PACKAGE "onnxruntime-osx-arm64-${ORT_VERSION}")
+  set(ORT_ARCHIVE "${ORT_PACKAGE}.tgz")
+  set(ORT_SHA256 "2e1344a1926ee50eb25b38153cb6992c3567515aef0e677a1a520a1798896d6f")
+  set(ORT_LIBRARY_SOURCE "lib/libonnxruntime.${ORT_VERSION}.dylib")
+  set(ORT_LIBRARY_NAME "libbreezy-onnxruntime.dylib")
+elseif(WIN32)
+  set(ORT_PACKAGE "onnxruntime-win-x64-${ORT_VERSION}")
+  set(ORT_ARCHIVE "${ORT_PACKAGE}.zip")
+  set(ORT_SHA256 "5869e26bb25314375f2d5ef1877e3ea06b1543d6c710e6e4a1ec2f7177ab4b2c")
+  set(ORT_LIBRARY_SOURCE "lib/onnxruntime.dll")
+  set(ORT_LIBRARY_NAME "breezy-onnxruntime.dll")
+else()
+  message(FATAL_ERROR "ONNX Runtime is only set up for macOS and Windows")
+endif()
+
+set(ORT_DEPS_DIR "${CMAKE_SOURCE_DIR}/.deps/onnxruntime")
+set(ORT_ROOT "${ORT_DEPS_DIR}/${ORT_PACKAGE}")
+set(ORT_LIBRARY "${ORT_DEPS_DIR}/${ORT_LIBRARY_NAME}")
+
+if(NOT EXISTS "${ORT_ROOT}/include/onnxruntime_cxx_api.h")
+
+  file(DOWNLOAD
+    "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_ARCHIVE}"
+    "${ORT_DEPS_DIR}/${ORT_ARCHIVE}"
+    EXPECTED_HASH SHA256=${ORT_SHA256}
+    TLS_VERIFY ON
+    SHOW_PROGRESS
+  )
+
+  file(ARCHIVE_EXTRACT INPUT "${ORT_DEPS_DIR}/${ORT_ARCHIVE}" DESTINATION "${ORT_DEPS_DIR}")
+  file(REMOVE "${ORT_DEPS_DIR}/${ORT_ARCHIVE}")
+  file(REMOVE "${ORT_LIBRARY}")
+
+endif()
+
+if(NOT EXISTS "${ORT_LIBRARY}")
+
+  file(COPY_FILE "${ORT_ROOT}/${ORT_LIBRARY_SOURCE}" "${ORT_LIBRARY}")
+
+  # The install name is what dyld matches loaded images on, give the renamed
+  # copy its own.
+  if(APPLE)
+    execute_process(
+      COMMAND install_name_tool -id "@rpath/${ORT_LIBRARY_NAME}" "${ORT_LIBRARY}"
+      COMMAND_ERROR_IS_FATAL ANY
+    )
+  endif()
+
+endif()
+
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${ORT_ROOT}/include")
+
+# The API is fetched from the loaded library, nothing links against it.
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+  ORT_API_MANUAL_INIT
+  BREEZY_ORT_LIBRARY_NAME="${ORT_LIBRARY_NAME}"
+)
 
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
   $<$<OR:$<C_COMPILER_ID:GNU>,$<C_COMPILER_ID:Clang>,$<C_COMPILER_ID:AppleClang>>:-Wno-unused-parameter -Wno-error=unused-parameter>
   $<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>:-Wno-unused-parameter -Wno-error=unused-parameter>
 )
 
-find_package(Threads REQUIRED)
+if(APPLE)
 
-#-------------------------------------------------------------------------------
-# Tensorflow Windows
-#-------------------------------------------------------------------------------
-
-if(WIN32)
-
-  target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    "${TFLITE_SRC_DIR}"
-    "${TFLITE_BUILD_DIR}"
-  )
-
-  target_link_libraries(${PROJECT_NAME} PRIVATE
-    "${TFLITE_BUILD_DIR}/$<CONFIG>/tensorflow-lite.lib"
-    "${TFLITE_BUILD_DIR}/_deps/flatbuffers-build/$<CONFIG>/flatbuffers.lib"
-    "${TFLITE_BUILD_DIR}/_deps/XNNPACK-build/$<CONFIG>/XNNPACK.lib"
-    "${TFLITE_BUILD_DIR}/_deps/cpuinfo-build/$<CONFIG>/cpuinfo.lib"
-    "${TFLITE_BUILD_DIR}/pthreadpool/$<CONFIG>/pthreadpool.lib"
-    Threads::Threads
-  )
-
-  foreach(CFG IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
-
-    file(GLOB RUY_LIBS_${CFG}
-      "${TFLITE_BUILD_DIR}/_deps/ruy-build/**/${CFG}/ruy_*.lib")
-    file(GLOB ABSL_LIBS_${CFG}
-      "${TFLITE_BUILD_DIR}/_deps/abseil-cpp-build/absl/**/${CFG}/absl_*.lib")
-    file(GLOB PTHREAD_LIBS_${CFG}
-      "${TFLITE_BUILD_DIR}/pthreadpool/${CFG}/pthreadpool.lib")
-    file(GLOB FP16_LIBS_${CFG}
-      "${TFLITE_BUILD_DIR}/**/${CFG}/*[Ff][Pp]16*.lib")
-    file(GLOB FXDIV_LIBS_${CFG}
-      "${TFLITE_BUILD_DIR}/**/${CFG}/fxdiv*.lib")
-    file(GLOB CLOG_LIBS_${CFG}
-      "${TFLITE_BUILD_DIR}/**/${CFG}/clog*.lib")
-    file(GLOB FARMHASH_LIBS_${CFG}
-      "${TFLITE_BUILD_DIR}/_deps/farmhash-build/${CFG}/farmhash*.lib")
-    file(GLOB FFT2D_LIBS_${CFG}
-      "${TFLITE_BUILD_DIR}/_deps/fft2d-build/${CFG}/fft2d_fftsg*.lib")
-
-    target_link_libraries(${PROJECT_NAME} PRIVATE
-      $<$<CONFIG:${CFG}>:${RUY_LIBS_${CFG}}>
-      $<$<CONFIG:${CFG}>:${ABSL_LIBS_${CFG}}>
-      $<$<CONFIG:${CFG}>:${PTHREAD_LIBS_${CFG}}>
-      $<$<CONFIG:${CFG}>:${FP16_LIBS_${CFG}}>
-      $<$<CONFIG:${CFG}>:${FXDIV_LIBS_${CFG}}>
-      $<$<CONFIG:${CFG}>:${CLOG_LIBS_${CFG}}>
-      $<$<CONFIG:${CFG}>:${FARMHASH_LIBS_${CFG}}>
-      $<$<CONFIG:${CFG}>:${FFT2D_LIBS_${CFG}}>
-    )
-
-  endforeach()
+  # Copied into the bundle's Contents/Frameworks and signed with it.
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE "${ORT_LIBRARY}")
+  set_source_files_properties("${ORT_LIBRARY}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
 
 endif()
 
-#-------------------------------------------------------------------------------
-# Tensorflow Mac
-#-------------------------------------------------------------------------------
+if(WIN32)
 
-if(APPLE)
-
-  file(GLOB ABSL_LIBS
-    "${TFLITE_BUILD_DIR}/_deps/abseil-cpp-build/libabsl_*.a")
-  file(GLOB_RECURSE RUY_LIBS
-    "${TFLITE_BUILD_DIR}/**/libruy_*.a")
-  file(GLOB_RECURSE FP16_LIB
-    "${TFLITE_BUILD_DIR}/**/lib[Ff][Pp]16*.a")
-  file(GLOB_RECURSE FXDIV_LIB
-    "${TFLITE_BUILD_DIR}/**/libfxdiv*.a")
-  file(GLOB_RECURSE CLOG_LIB
-    "${TFLITE_BUILD_DIR}/**/libclog*.a")
-  file(GLOB_RECURSE FARMHASH_LIB
-    "${TFLITE_BUILD_DIR}/**/libfarmhash*.a")
-  file(GLOB_RECURSE FFT2D_LIB
-    "${TFLITE_BUILD_DIR}/**/libfft2d*.a")
-
-  target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    "${TFLITE_BUILD_DIR}/pthreadpool"
+  # Lives next to the plugin DLL.
+  add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ORT_LIBRARY}" "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>"
+    VERBATIM
   )
 
-  target_link_libraries(${PROJECT_NAME} PRIVATE
-    "${TFLITE_BUILD_DIR}/libtensorflow-lite.a"
-    "${TFLITE_BUILD_DIR}/_deps/flatbuffers-build/libflatbuffers.a"
-    "${TFLITE_BUILD_DIR}/_deps/xnnpack-build/libXNNPACK.a"
-    "${TFLITE_BUILD_DIR}/_deps/cpuinfo-build/libcpuinfo.a"
-    "${TFLITE_BUILD_DIR}/pthreadpool/libpthreadpool.a"
-    ${RUY_LIBS}
-    ${FARMHASH_LIB}
-    ${FFT2D_LIB}
-    ${FP16_LIB}          # optional
-    ${FXDIV_LIB}         # optional
-    ${CLOG_LIB}          # optional
-    ${ABSL_LIBS}
-    Threads::Threads
-  )
+  install(FILES "${ORT_LIBRARY}" DESTINATION "${CMAKE_PROJECT_NAME}/bin/64bit")
 
 endif()
 
@@ -336,6 +309,7 @@ if(WIN32 AND BREEZY_DEPLOY)
     COMMAND ${CMAKE_COMMAND} -E echo "Deploying to: ${PLUGIN_DIR}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${PLUGIN_DIR}/bin/64bit"
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${CMAKE_PROJECT_NAME}>" "${PLUGIN_DIR}/bin/64bit/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${ORT_LIBRARY}" "${PLUGIN_DIR}/bin/64bit/"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/data" "${PLUGIN_DIR}/data"
 
     # Optional: brutal restart for dev workflow; comment out if you prefer manual

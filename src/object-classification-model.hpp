@@ -1,13 +1,14 @@
 #pragma once
 
 #include "model.hpp"
+#include "onnx-runtime.hpp"
+
+#include <memory>
+#include <string>
+#include <vector>
 
 #include <QObject>
 #include <QVector>
-
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
-#include "tensorflow/lite/model.h"
 
 class ObjectClassificationModel : public Model {
 
@@ -23,23 +24,34 @@ public:
 
 	uint32_t inputWidth() const override;
 	uint32_t inputHeight() const override;
-	
+
 private:
-	
-	int  m_threads = 1;
-	bool m_xnnpack = true;
-	
+
+	int m_threads = 1;
+
 	int m_lastSrcW = -1;
 	int m_lastSrcH = -1;
 	QVector<int>   m_x0, m_x1;    // cached x indices
 	QVector<int>   m_y0, m_y1;
 	QVector<float> m_wx;          // cached x weights
 	QVector<float> m_wy;
-	
-	std::unique_ptr<tflite::FlatBufferModel> m_model;
-	std::unique_ptr<tflite::Interpreter> m_inter;
-	TfLiteDelegate* m_delegate = nullptr;
-	
+
+	// Input is NHWC: [1, height, width, channels].
+	int m_inputH = 0;
+	int m_inputW = 0;
+	int m_inputC = 0;
+	int m_outputK = 0;
+
+	std::string m_inputName;
+	std::string m_outputName;
+
+	std::vector<float> m_input;
+	std::vector<float> m_output;
+
+	std::unique_ptr<Ort::Session> m_session;
+	std::unique_ptr<Ort::Value> m_inputTensor;
+	std::unique_ptr<Ort::Value> m_outputTensor;
+
 	bool process(const Frame& frame);
 	bool resolve(const Frame& frame, QVector<PredictionPtr>& preds);
 };

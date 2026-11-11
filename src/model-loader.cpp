@@ -135,7 +135,7 @@ ModelLoader::getModelCacheFileName(const ModelInfo& info) const {
 	name.append("@");
 	name.append(info.version);
 	name.append(".");
-	name.append("tflite");
+	name.append("onnx");
 	
 	return name;
 }

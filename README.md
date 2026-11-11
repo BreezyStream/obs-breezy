@@ -2,7 +2,7 @@
 
 The OBS Studio plugin for [Breezy](https://breezy.stream). It runs your Breezy AI models **directly inside OBS**, on any video source, and applies live effects driven by what they see.
 
-Models are trained in the Breezy console or in [Breezy Studio](https://github.com/breezystream/breezy-studio), then streamed to OBS as TensorFlow Lite files. Inference runs locally on your machine. No video frames leave your computer.
+Models are trained in the Breezy console or in [Breezy Studio](https://github.com/breezystream/breezy-studio), then streamed to OBS as ONNX files. Inference runs locally on your machine. No video frames leave your computer.
 
 ## Features
 
@@ -49,14 +49,14 @@ Downloads (if needed) and loads one or more models.
       "infos": "",
       "inferenceRate": 10,
       "version": { "label": "1.0" },
-      "files": [{ "type": "TENSORFLOW_LITE_FP32_MODEL", "url": "https://…" }],
+      "files": [{ "type": "ONNX_FP32_MODEL", "url": "https://…" }],
       "specs": { "inputColor": "RGB", "inputRange": { "min": -1, "max": 1 } }
     }
   ]
 }
 ```
 
-`inferenceRate` (predictions per second) defaults to `10`. `version` defaults to `latest`. Accepted file types: `TENSORFLOW_LITE_FP32_MODEL`, `TENSORFLOW_LITE_FP16_MODEL`, `TENSORFLOW_LITE_INT8_MODEL`.
+`inferenceRate` (predictions per second) defaults to `10`. `version` defaults to `latest`. Accepted file types: `ONNX_FP32_MODEL`, `ONNX_FP16_MODEL`, `ONNX_INT8_MODEL`.
 
 ### `effect.apply`
 
@@ -91,7 +91,9 @@ Emitted after each inference.
 
 ## Building from source
 
-The build is based on the [OBS plugin template](https://github.com/obsproject/obs-plugintemplate) and links TensorFlow Lite 2.16.1 statically.
+The build is based on the [OBS plugin template](https://github.com/obsproject/obs-plugintemplate) and runs models with [ONNX Runtime](https://onnxruntime.ai) 1.31.1.
+
+The runtime is shipped inside the plugin under its own name (`libbreezy-onnxruntime.dylib` in `Contents/Frameworks`, `breezy-onnxruntime.dll` next to the plugin DLL) and loaded by absolute path, so it never clashes with the `onnxruntime` library other OBS plugins bundle.
 
 ### Requirements
 
@@ -100,27 +102,18 @@ The build is based on the [OBS plugin template](https://github.com/obsproject/ob
 | macOS | Xcode 16, CMake 3.28+, [pipx](https://pipx.pypa.io) |
 | Windows | Visual Studio 2022, CMake 3.28+ |
 
-### 1. Build TensorFlow Lite (once)
-
-This clones TensorFlow into `tensorflow-src/` and builds TFLite into `tflite-build/` and `tflite-lib/`. It takes a while.
-
-```bash
-./setup-mac.sh        # macOS
-.\setup-win.ps1       # Windows (PowerShell)
-```
-
-### 2. Build the plugin
+### 1. Build the plugin
 
 ```bash
 ./build-mac-release.sh      # or ./build-mac-debug.sh
 .\build-win-release.ps1     # or .\build-win-debug.ps1
 ```
 
-The first configure downloads the OBS sources, obs-deps and Qt 6 listed in [buildspec.json](buildspec.json), plus the obs-websocket API header.
+The first configure downloads the OBS sources, obs-deps and Qt 6 listed in [buildspec.json](buildspec.json), plus the obs-websocket API header and the ONNX Runtime package (cached in `.deps/onnxruntime`, checked against its SHA-256).
 
 On macOS, `scripts/mac-remove-agl.py` strips the obsolete AGL framework from the generated Xcode project, which newer SDKs no longer ship.
 
-### 3. Install locally
+### 2. Install locally
 
 Copy the built plugin to OBS's plugin folder, then restart OBS:
 
@@ -140,7 +133,8 @@ src/
   model-dock.*               "Breezy" dock
   model-loader.*             Model download and cache
   model-worker*.*            Inference thread
-  object-classification-*    TFLite object classification model
+  object-classification-*    ONNX object classification model
+  onnx-runtime.*             Loads the bundled ONNX Runtime
 cmake/, build-aux/, .github/ OBS plugin template build system
 ```
 

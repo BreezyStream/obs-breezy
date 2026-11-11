@@ -78,20 +78,29 @@ obs_websocket_request_model_load(obs_data_t *request_data, obs_data_t *response_
 
 			info.inferenceRate = inferenceRate;
 			
-			if (obs_data_has_user_value(item, "version")) {
-				
-				obs_data_t* version = obs_data_get_obj(item, "version");
-				info.version = QString(obs_data_get_string(version, "label"));
+			/*
+			 * Unversioned snapshots send "version": null, which the WebSocket
+			 * request data keeps as a value without an object. Anything
+			 * without a label is the latest snapshot.
+			 */
+
+			obs_data_t* version = obs_data_get_obj(item, "version");
+			const char* versionLabel = version ? obs_data_get_string(version, "label") : nullptr;
+
+			if (versionLabel && versionLabel[0] != '\0') {
+
+				info.version = QString(versionLabel);
 				info.versionMajor = (int) obs_data_get_int(version, "major");
 				info.versionMinor = (int) obs_data_get_int(version, "minor");
 				info.versionPatch = (int) obs_data_get_int(version, "patch");
-				obs_data_release(version);
-				
+
 			} else {
-				
+
 				info.version = "latest";
 
 			}
+
+			obs_data_release(version);
 			
 			obs_data_array* files = obs_data_get_array(item, "files");
 
@@ -106,9 +115,9 @@ obs_websocket_request_model_load(obs_data_t *request_data, obs_data_t *response_
 					const char* url  = obs_data_get_string(item, "url");
 					const char* type = obs_data_get_string(item, "type");
 					
-					if (strcmp(type, "TENSORFLOW_LITE_FP32_MODEL") == 0 ||
-						strcmp(type, "TENSORFLOW_LITE_FP16_MODEL") == 0 ||
-						strcmp(type, "TENSORFLOW_LITE_INT8_MODEL") == 0) {
+					if (strcmp(type, "ONNX_FP32_MODEL") == 0 ||
+						strcmp(type, "ONNX_FP16_MODEL") == 0 ||
+						strcmp(type, "ONNX_INT8_MODEL") == 0) {
 						info.url = QString(url);
 						break;
 					}

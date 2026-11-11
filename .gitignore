@@ -16,10 +16,8 @@
 !CMakePresets.json
 !LICENSE
 !README.md
-!setup-mac.sh
 !build-mac-debug.sh
 !build-mac-release.sh
-!setup-win.ps1
 !build-win-debug.ps1
 !build-win-release.ps1
 
