@@ -17,7 +17,7 @@
 namespace {
 
 std::once_flag gLoadOnce;
-std::unique_ptr<Ort::Env> gEnv;
+Ort::Env* gEnv = nullptr;
 QString gError;
 bool gLoaded = false;
 
@@ -90,7 +90,7 @@ OnnxRuntime::load() {
 		Ort::InitApi(api);
 
 		try {
-			gEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "breezy");
+			gEnv = new Ort::Env(ORT_LOGGING_LEVEL_WARNING, "breezy");
 		} catch (const Ort::Exception& e) {
 			gError = QString("Unable to create the ONNX Runtime environment: %1").arg(e.what());
 			return;
