@@ -210,9 +210,9 @@ obs_websocket_request_effect(obs_data_t *request_data, obs_data_t *response_data
 				info.duration = (float) obs_data_get_double(options, "duration");
 			}
 
-			if (obs_data_has_user_value(data, "equation")) {
+			if (obs_data_has_user_value(options, "easing")) {
 
-				auto equation = obs_data_get_string(data, "equation");
+				auto equation = obs_data_get_string(options, "easing");
 
 				if (strcmp(equation, "linear") == 0) {
 					info.equation = FrameEffectAnimationEquation::Linear;
