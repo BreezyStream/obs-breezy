@@ -2,6 +2,7 @@
 #include "model-dock-item.hpp"
 #include "model.hpp"
 #include "object-classification-model-prediction.hpp"
+#include "plugin-support.h"
 
 #include "ui_model-dock.h"
 
@@ -79,12 +80,12 @@ ModelDock::updateModelItem(Model* model, ModelStatus status, float progress) {
 		});
 
 		/*
-		 * Items go before the stretch that keeps them at the top, they start
-		 * collapsed.
+		 * Items go before the stretch that keeps them at the top and the
+		 * version label below it, they start collapsed.
 		 */
 
 		auto layout = static_cast<QVBoxLayout*>(ui->listContent->layout());
-		auto index = layout->count() - 1;
+		auto index = layout->count() - 2;
 
 		layout->insertWidget(index, item);
 
@@ -156,8 +157,13 @@ ModelDock::setup() {
 	m_empty->setContentsMargins(16, 16, 16, 16);
 	m_empty->setEnabled(false);
 
+	auto version = new QLabel(QString("Version %1").arg(QString::fromUtf8(PLUGIN_VERSION)), ui->listContent);
+	version->setAlignment(Qt::AlignCenter);
+	version->setEnabled(false);
+
 	layout->addWidget(m_empty);
 	layout->addStretch(1);
+	layout->addWidget(version);
 
 	m_unifyVersions = new QCheckBox("Use the most recent version of each model");
 	m_unifyVersions->setToolTip("When widgets load different versions of the same model, run only the most recent one and send its predictions to all of them. Saves CPU.");
