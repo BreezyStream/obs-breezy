@@ -15,10 +15,11 @@ $Installer = "release\$OutputName.exe"
 $Iscc = (Get-Command -Name "iscc" -ErrorAction SilentlyContinue).Source
 if (-not $Iscc) {
 	# Inno Setup doesn't add itself to PATH, and winget may install it per user
-	$Iscc = @(
-		"${Env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-		"$Env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
-	) | Where-Object { Test-Path $_ } | Select-Object -First 1
+	$Iscc = Get-ChildItem -ErrorAction SilentlyContinue -Path @(
+		"${Env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe"
+		"$Env:ProgramFiles\Inno Setup *\ISCC.exe"
+		"$Env:LOCALAPPDATA\Programs\Inno Setup *\ISCC.exe"
+	) | Select-Object -First 1 -ExpandProperty FullName
 }
 if (-not $Iscc) {
 	throw "Inno Setup not found. Install it with: winget install JRSoftware.InnoSetup"
