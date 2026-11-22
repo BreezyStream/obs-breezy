@@ -16,7 +16,7 @@ Models are trained in the Breezy console or in [Breezy Studio](https://github.co
 Download the installer for your platform from [breezy.stream](https://breezy.stream) or the [Releases](https://github.com/breezystream/obs-breezy/releases) page, then restart OBS.
 
 - **macOS:** open the `.pkg` and follow the installer.
-- **Windows:** extract the `.zip` into `C:\ProgramData\obs-studio\plugins\`. Create the folder if it doesn't exist (`ProgramData` is hidden, paste the path into File Explorer's address bar).
+- **Windows:** open the `.exe` and follow the installer. To install manually, extract the `.zip` into `C:\ProgramData\obs-studio\plugins\`. Create the folder if it doesn't exist (`ProgramData` is hidden, paste the path into File Explorer's address bar).
 
 | Platform | Requirements |
 |---|---|
