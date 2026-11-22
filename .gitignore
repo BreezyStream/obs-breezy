@@ -20,6 +20,8 @@
 !build-mac-release.sh
 !build-win-debug.ps1
 !build-win-release.ps1
+!release-mac.sh
+!release-win.ps1
 
 # Exclude lock files
 *.lock.json
